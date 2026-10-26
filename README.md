@@ -4,6 +4,9 @@ Portable agent-memory interchange: convert and carry memory/context
 between Claude Code, Codex, Cursor and other tools in one open format,
 so switching tools doesn't wipe what your agents know.
 
+**Demo:** [sample memory move](https://tamtunnel.github.io/memport/) — real
+CLI output, plus a [62-second explainer video](https://tamtunnel.github.io/memport/#video).
+
 ## The problem
 
 Every coding agent accumulates two kinds of memory, and only one of them
