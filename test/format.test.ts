@@ -12,6 +12,7 @@ import {
   writeBundle,
   type MemportItem,
 } from "../src/format.ts";
+import { generateUlid, isUlid } from "../src/ulid.ts";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "memport-format-"));
@@ -137,5 +138,74 @@ describe("format: bundle round-trip and validation", () => {
   it("rejects a bundle with no manifest", () => {
     const errors = validateBundle(dir);
     assert.ok(errors.some((e) => e.includes("memport.json")), JSON.stringify(errors));
+  });
+
+  it("refuses a symlinked item file on read even with a recomputed hash (F1)", () => {
+    const outside = tmpDir();
+    const item = sampleItem({}, "Outside content wins if followed.");
+    writeBundle(dir, [item], { source_tool: null, source_path: null, project: null });
+    const target = path.join(outside, "outside.md");
+    fs.writeFileSync(target, serializeItem(item));
+    fs.unlinkSync(path.join(dir, "items", `${item.meta.id}.md`));
+    fs.symlinkSync(target, path.join(dir, "items", `${item.meta.id}.md`));
+    // Attacker's move: recompute the manifest hash over the target's bytes.
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "memport.json"), "utf8")) as {
+      items: { sha256: string }[];
+    };
+    manifest.items[0].sha256 = sha256Hex(fs.readFileSync(target));
+    fs.writeFileSync(path.join(dir, "memport.json"), JSON.stringify(manifest, null, 2));
+    assert.throws(() => readBundle(dir), /symlinked file refused/);
+    const errors = validateBundle(dir);
+    assert.ok(errors.some((e) => e.includes("symlinked file refused")), JSON.stringify(errors));
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("refuses a symlinked manifest and a symlinked items/ directory on read", () => {
+    const outside = tmpDir();
+    const item = sampleItem();
+    writeBundle(dir, [item], { source_tool: null, source_path: null, project: null });
+    const target = path.join(outside, "manifest.json");
+    fs.writeFileSync(target, fs.readFileSync(path.join(dir, "memport.json"), "utf8"));
+    fs.unlinkSync(path.join(dir, "memport.json"));
+    fs.symlinkSync(target, path.join(dir, "memport.json"));
+    assert.throws(() => readBundle(dir), /symlinked file refused/);
+    fs.unlinkSync(path.join(dir, "memport.json"));
+    fs.writeFileSync(path.join(dir, "memport.json"), fs.readFileSync(target, "utf8"));
+    fs.renameSync(path.join(dir, "items"), path.join(outside, "items-real"));
+    fs.symlinkSync(path.join(outside, "items-real"), path.join(dir, "items"));
+    assert.throws(() => readBundle(dir), /symlinked file refused/);
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("writeBundle refuses symlinked item/manifest paths and leaves the target untouched (H1)", () => {
+    const victim = path.join(dir, "victim.md");
+    fs.writeFileSync(victim, "VICTIM — must survive.\n");
+    const item = sampleItem();
+    const bundleDir = path.join(dir, "b");
+    fs.mkdirSync(path.join(bundleDir, "items"), { recursive: true });
+    fs.symlinkSync(victim, path.join(bundleDir, "items", `${item.meta.id}.md`));
+    assert.throws(() => writeBundle(bundleDir, [item], { source_tool: null, source_path: null, project: null }), /symlinked file refused/);
+    assert.equal(fs.readFileSync(victim, "utf8"), "VICTIM — must survive.\n");
+    fs.unlinkSync(path.join(bundleDir, "items", `${item.meta.id}.md`));
+    fs.symlinkSync(victim, path.join(bundleDir, "memport.json"));
+    assert.throws(() => writeBundle(bundleDir, [item], { source_tool: null, source_path: null, project: null }), /symlinked file refused/);
+    assert.equal(fs.readFileSync(victim, "utf8"), "VICTIM — must survive.\n");
+  });
+
+  it("validate flags extra unlisted files in items/ (M5/L1)", () => {
+    writeBundle(dir, [sampleItem()], { source_tool: null, source_path: null, project: null });
+    fs.writeFileSync(path.join(dir, "items", "stray.md"), "Not in the manifest.\n");
+    const errors = validateBundle(dir);
+    assert.ok(errors.some((e) => e.includes("not listed in the manifest")), JSON.stringify(errors));
+  });
+
+  it("isUlid rejects non-canonical first characters (M7)", () => {
+    assert.equal(isUlid("80000000000000000000000000"), false);
+    assert.equal(isUlid("ZZZZZZZZZZZZZZZZZZZZZZZZZZ"), false);
+    assert.equal(isUlid("70000000000000000000000000"), true);
+    assert.equal(isUlid("00000000000000000000000000"), true);
+    assert.equal(isUlid("01ar9k8q7z6y5x4w3v2u1t0sr"), false); // lowercase
+    assert.equal(isUlid("01AR9K8Q7Z6Y5X4W3V2U1T0S"), false); // 25 chars
+    assert.equal(isUlid(generateUlid()), true);
   });
 });

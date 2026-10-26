@@ -5,7 +5,9 @@
 // and write nothing; --apply executes. scan, validate, and list are
 // read-only. `convert` materializes its intermediate bundle in a temp
 // dir (or --out) even in plan mode; that scratch dir is reported and
-// is never a target-tool write.
+// is never a target-tool write. Intermediate bundles are KEPT, not
+// cleaned up — the plan describes that bundle, and --apply users may
+// want it for audit. Delete it yourself when you are done with it.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -18,6 +20,7 @@ import {
   findExistingId,
   MemportError,
   readBundle,
+  refuseSymlink,
   validateBundle,
   writeBundle,
   type MemportItem,
@@ -55,7 +58,7 @@ Usage:
   memport bundle --from <tool> [--scope user|project] [--project <dir>] --out <dir> [--apply] [--json]
   memport apply --bundle <dir> --to <tool> [--scope user|project] [--project <dir>] [--apply] [--force] [--allow-secrets] [--json]
   memport convert --from <tool> --to <tool> [--scope user|project] [--project <dir>] [--out <dir>] [--apply] [--force] [--allow-secrets] [--json]
-  memport merge <bundleA> <bundleB> --out <dir> [--apply] [--strict] [--json]
+  memport merge <bundleA> <bundleB> --out <dir> [--apply] [--strict] [--allow-secrets] [--json]
   memport validate <dir> [--json]
   memport list <dir> [--kind <kind>] [--scope <scope>] [--json]
 
@@ -177,6 +180,14 @@ function mergeCollectedInto(
   const manifestPath = path.join(outDir, "memport.json");
   if (fs.existsSync(manifestPath)) {
     const loaded = readBundle(outDir);
+    // H3: never merge into an unvalidated existing bundle — reading it
+    // and rewriting fresh hashes would launder a forgery into a
+    // valid-looking bundle. Refuse in plan mode too, so a forged item
+    // is never reported as "kept".
+    const errors = validateBundle(outDir);
+    if (errors.length > 0) {
+      throw new MemportError(`refusing to merge into invalid existing bundle at ${outDir}:\n${errors.join("\n")}`);
+    }
     existing = loaded.items;
   } else if (fs.existsSync(outDir) && fs.readdirSync(outDir).length > 0) {
     throw new MemportError(`--out ${outDir} exists and is not a memport bundle (refusing to write into it)`);
@@ -189,8 +200,11 @@ function mergeCollectedInto(
     if (match) {
       reused++;
       const idx = merged.indexOf(match);
+      // Re-import idempotence: the existing id is kept, and so is its
+      // status — re-import must not silently reactivate a superseded
+      // or disputed item.
       merged[idx] = {
-        meta: { ...item.meta, id: match.meta.id, created: match.meta.created, updated: new Date().toISOString(), status: "active" },
+        meta: { ...item.meta, id: match.meta.id, created: match.meta.created, updated: new Date().toISOString(), status: match.meta.status },
         body: item.body,
       };
     } else {
@@ -287,6 +301,7 @@ function printApplyPlan(flags: Flags, plan: ApplyPlan, extra: Record<string, unk
     backup: plan.backup,
     backupExists: plan.backupExists,
     rendered: plan.renderedCount,
+    renderedItems: plan.renderedItems,
     skippedSuperseded: plan.skippedSuperseded,
     skippedDisputed: plan.skippedDisputed,
     losses: plan.losses,
@@ -300,11 +315,14 @@ function printApplyPlan(flags: Flags, plan: ApplyPlan, extra: Record<string, unk
   else if (plan.backupExists) human += `  backup: existing backup kept (not overwritten; pass --force to replace)\n`;
   else if (plan.action !== "noop") human += `  backup: none needed (target does not exist yet)\n`;
   human += `  rendered: ${plan.renderedCount} active item(s); skipped: ${plan.skippedSuperseded} superseded, ${plan.skippedDisputed} disputed\n`;
+  for (const it of plan.renderedItems) {
+    human += `    - ${it.title} (${it.id})\n`;
+  }
   human += `  losses:\n${formatLosses(plan.losses)}\n`;
   if (plan.secretFlags.length > 0) {
     human += `  SECRET FLAGS (review before applying):\n`;
     for (const f of plan.secretFlags) {
-      human += `    - ${f.title}: ${f.matches.map((m) => m.pattern).join(", ")}\n`;
+      human += `    - ${f.title}: ${f.patterns.join(", ")}\n`;
     }
   }
   for (const w of plan.warnings) human += `  warning: ${w}\n`;
@@ -365,7 +383,7 @@ function cmdConvert(flags: Flags): void {
     fail("apply refused: secret-flagged items present; review the plan and pass --allow-secrets to proceed", 1);
   }
   if (!flags.json) {
-    console.log(`Convert: intermediate bundle at ${bundleDir} (${merged.items.length} items).`);
+    console.log(`Convert: intermediate bundle kept at ${bundleDir} (${merged.items.length} items).`);
     for (const w of collected.warnings) console.log(`  import warning: ${w}`);
     console.log(`  import losses:\n${formatLosses(importLosses(collected.items))}`);
   }
@@ -391,14 +409,23 @@ function cmdMerge(flags: Flags, positionals: string[]): void {
     conflicts: result.conflicts,
     deduped: result.dedupedCount,
     possibleDuplicates: result.possibleDuplicates,
+    secretFlags: result.secretFlags,
+    supersededWinners: result.supersededWinners,
   };
   let human = `Merge plan: ${positionals[0]} + ${positionals[1]} → ${flags.out}\n`;
   human += `  output items: ${result.items.length}, deduped: ${result.dedupedCount}, conflicts: ${result.conflicts.length}, possible duplicates: ${result.possibleDuplicates.length}\n`;
   for (const c of result.conflicts) {
-    human += `  conflict ${c.id}: winner "${c.winnerTitle}" over "${c.loserTitle}" (${c.reason}; loser preserved in merge-report.md)\n`;
+    const sup = result.supersededWinners.some((w) => w.id === c.id);
+    human += `  conflict ${c.id}: winner "${c.winnerTitle}" over "${c.loserTitle}" (${c.reason}; loser preserved in merge-report.md)${sup ? " — winner is superseded; apply will skip it" : ""}\n`;
   }
   for (const p of result.possibleDuplicates) {
     human += `  possible duplicate "${p.title}": ${p.idA} and ${p.idB} (both kept)\n`;
+  }
+  if (result.secretFlags.length > 0) {
+    human += `  SECRET FLAGS (review before sharing — merge-report.md preserves loser text verbatim and is NOT redacted):\n`;
+    for (const f of result.secretFlags) {
+      human += `    - ${f.role} ${f.id} "${f.title}": ${f.patterns.join(", ")}\n`;
+    }
   }
   if (flags.strict && result.conflicts.length > 0) {
     printPlanOrJson(flags, human.trimEnd(), jsonObj);
@@ -409,6 +436,14 @@ function cmdMerge(flags: Flags, positionals: string[]): void {
     printPlanOrJson(flags, human.trimEnd(), jsonObj);
     return;
   }
+  // H5 gate (same discipline as apply/convert): a merge that writes a
+  // bundle whose report preserves secret-bearing loser text verbatim
+  // needs an explicit override. Plan mode never refuses — it writes
+  // nothing — so the flags above are the warning there.
+  if (result.secretFlags.length > 0 && !flags.allowSecrets) {
+    printPlanOrJson(flags, human.trimEnd(), jsonObj);
+    fail("merge refused: secret-flagged items/losers present; review the plan and pass --allow-secrets to proceed", 1);
+  }
   if (fs.existsSync(flags.out) && fs.readdirSync(flags.out).length > 0 && !fs.existsSync(path.join(flags.out, "memport.json"))) {
     fail(`--out ${flags.out} exists and is not a memport bundle (refusing to write into it)`, 1);
   }
@@ -418,6 +453,10 @@ function cmdMerge(flags: Flags, positionals: string[]): void {
     project: result.project,
     notes: [`merged from ${positionals[0]} and ${positionals[1]}`],
   });
+  // The report itself is a write target too: a planted symlink at
+  // merge-report.md would route loser text (possibly secret-bearing)
+  // into an arbitrary file. Refuse, like every other bundle write.
+  refuseSymlink(path.join(flags.out, "merge-report.md"), "merge-report.md");
   fs.writeFileSync(path.join(flags.out, "merge-report.md"), result.report, "utf8");
   human += `  WROTE merged bundle to ${flags.out} (merge-report.md included).`;
   printPlanOrJson(flags, human.trimEnd(), jsonObj);
@@ -445,9 +484,16 @@ function cmdList(flags: Flags, positionals: string[]): void {
   let items = bundle.items;
   if (flags.kind) items = items.filter((it) => it.meta.kind === flags.kind);
   if (flags.scope) items = items.filter((it) => it.meta.scope === flags.scope);
+  // list is read-only, but it must not present an untrusted bundle as
+  // legitimate: validate first and surface any failure prominently.
+  const validationErrors = validateBundle(positionals[0]);
   if (flags.json) {
-    console.log(JSON.stringify(items.map((it) => ({ ...it.meta, body: it.body })), null, 2));
+    console.log(JSON.stringify({ valid: validationErrors.length === 0, validationErrors, items: items.map((it) => ({ ...it.meta, body: it.body })) }, null, 2));
     return;
+  }
+  if (validationErrors.length > 0) {
+    console.log(`WARNING: bundle ${positionals[0]} FAILED validation — contents below are untrusted:`);
+    for (const e of validationErrors) console.log(`  - ${e}`);
   }
   if (items.length === 0) {
     console.log("(no items)");

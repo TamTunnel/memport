@@ -14,6 +14,7 @@ import { MemportError } from "../format.ts";
 import {
   humanizeStem,
   listFiles,
+  listSymlinks,
   makeRule,
   readIfExists,
   readMarkdownWithFrontmatter,
@@ -52,6 +53,9 @@ export function collectCursor(opts: CursorOptions): CollectResult {
   }
   const result: CollectResult = { items: [], warnings: [], sources: [], ignoredMd: 0 };
   const rulesDir = path.join(projectDir, ".cursor", "rules");
+  for (const link of listSymlinks(rulesDir, ".mdc")) {
+    result.warnings.push(`skipped symlinked file (not followed): ${link}`);
+  }
   for (const file of listFiles(rulesDir, ".mdc")) {
     const { data, body } = readMarkdownWithFrontmatter(file);
     result.sources.push(file);

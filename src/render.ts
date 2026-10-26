@@ -22,7 +22,7 @@ import {
   type LoadedBundle,
   validateBundle,
 } from "./format.ts";
-import { findSecrets, type SecretMatch } from "./secrets.ts";
+import { findSecrets } from "./secrets.ts";
 import { claudeHome, codexHome } from "./adapters/common.ts";
 import { chainTotalBytes, inspectCodexChain, pickChainFile } from "./adapters/codex.ts";
 
@@ -290,6 +290,12 @@ export function computeLosses(items: MemportItem[], targetTool: string): PlanLos
     if (sk.startsWith("claude:type:") && item.meta.kind !== "reference") {
       bump("claude-type-flattened", item.meta.title);
     }
+    // Path-scoped Claude rules lose their scoping on every render: all
+    // three targets are always-loaded (Claude rules file, Codex section,
+    // Cursor alwaysApply .mdc), and none carries per-item `paths`.
+    if (sk.startsWith("claude:rules:paths:")) {
+      bump("claude-paths-scoping-lost", item.meta.title);
+    }
     if (sk.startsWith("cursor:")) {
       bump("cursor-activation-flattened", item.meta.title);
     }
@@ -317,10 +323,14 @@ export interface ApplyPlan {
   backup: string | null;
   backupExists: boolean;
   renderedCount: number;
+  /** Active items rendered, in render order (title, then id). */
+  renderedItems: { id: string; title: string }[];
   skippedSuperseded: number;
   skippedDisputed: number;
   losses: PlanLoss[];
-  secretFlags: { title: string; matches: SecretMatch[] }[];
+  /** Pattern names only — excerpts never leave the secrets module, so
+   *  --json plan output cannot embed secret material. */
+  secretFlags: { title: string; patterns: string[] }[];
   warnings: string[];
   escapedTitles: string[];
   writePlan: WritePlan;
@@ -347,6 +357,15 @@ export function planApply(bundle: LoadedBundle, opts: ApplyOptions): ApplyPlan {
   const active = bundle.items.filter((it) => it.meta.status === "active");
   const skippedSuperseded = bundle.items.filter((it) => it.meta.status === "superseded").length;
   const skippedDisputed = bundle.items.filter((it) => it.meta.status === "disputed").length;
+  // A symlinked target means the write lands in the link target, outside
+  // the target file's directory. Warned, not refused: the plan is the
+  // user's chance to notice before --apply follows the link.
+  let targetSymlink = false;
+  try {
+    targetSymlink = fs.lstatSync(target).isSymbolicLink();
+  } catch {
+    targetSymlink = false;
+  }
   if (active.length === 0) {
     const noopPlan: WritePlan = {
       target,
@@ -354,29 +373,57 @@ export function planApply(bundle: LoadedBundle, opts: ApplyOptions): ApplyPlan {
       backup: null,
       backupExists: fs.existsSync(target + BACKUP_SUFFIX),
     };
+    const warnings = ["no active items to render — nothing will be written"];
+    if (targetSymlink) {
+      warnings.push(
+        `apply target ${target} is a symlink — a write would land in the link target, outside the target file's directory`,
+      );
+    }
     return {
       target,
       action: "noop",
       backup: null,
       backupExists: noopPlan.backupExists,
       renderedCount: 0,
+      renderedItems: [],
       skippedSuperseded,
       skippedDisputed,
       losses: [],
       secretFlags: [],
-      warnings: ["no active items to render — nothing will be written"],
+      warnings,
       escapedTitles: [],
       writePlan: noopPlan,
     };
   }
   const { text: doc, escapedTitles } = renderDocument(active);
+  const renderedItems = [...active]
+    .sort((x, y) => {
+      if (x.meta.title < y.meta.title) return -1;
+      if (x.meta.title > y.meta.title) return 1;
+      return x.meta.id < y.meta.id ? -1 : 1;
+    })
+    .map((it) => ({ id: it.meta.id, title: it.meta.title }));
   const losses = computeLosses(active, opts.tool);
   const secretFlags: ApplyPlan["secretFlags"] = [];
   for (const item of active) {
-    const matches = findSecrets(item.body);
-    if (matches.length > 0) secretFlags.push({ title: item.meta.title, matches });
+    const patterns = findSecrets(item.body).map((m) => m.pattern);
+    if (patterns.length > 0) secretFlags.push({ title: item.meta.title, patterns });
   }
   const warnings: string[] = [];
+  if (targetSymlink) {
+    warnings.push(
+      `apply target ${target} is a symlink — a write would land in the link target, outside the target file's directory`,
+    );
+  }
+  // Identity does not survive re-import of the rendered file for Codex
+  // (AGENTS.md section) or Claude (rules file): both lack per-item
+  // frontmatter, so re-import mints new ids unless the title-match
+  // idempotence rule matches. Say so plainly in every plan.
+  if (opts.tool === "codex" || opts.tool === "claude") {
+    warnings.push(
+      `Identity loss on re-import: per-item ids do not survive re-import of the rendered ${opts.tool === "codex" ? "AGENTS.md section" : "rules file"} — re-import mints new ids unless the title-match idempotence rule matches (same source tool, source path, normalized title). Keep the bundle as the source of truth.`,
+    );
+  }
   if (escapedTitles.length > 0) {
     warnings.push(
       `${escapedTitles.length} item body(ies) contained a literal Memport marker line; escaped in rendered output (${escapedTitles.slice(0, 3).join(", ")})`,
@@ -428,6 +475,7 @@ export function planApply(bundle: LoadedBundle, opts: ApplyOptions): ApplyPlan {
     backup: writePlan.backup,
     backupExists: writePlan.backupExists,
     renderedCount: active.length,
+    renderedItems,
     skippedSuperseded,
     skippedDisputed,
     losses,

@@ -12,6 +12,7 @@ import {
   codexHome,
   humanizeStem,
   listFiles,
+  listSymlinks,
   makeRule,
   readIfExists,
   type CollectResult,
@@ -125,6 +126,9 @@ export function collectCodex(opts: CodexOptions): CollectResult {
   if (opts.scope === "user") {
     // Codex memories summaries are user-level generated state.
     const memDir = path.join(home, "memories");
+    for (const link of listSymlinks(memDir, ".md")) {
+      result.warnings.push(`skipped symlinked file (not followed): ${link}`);
+    }
     for (const file of listFiles(memDir, ".md")) {
       const text = readIfExists(file);
       if (text === null || text.trim() === "") continue;

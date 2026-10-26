@@ -13,6 +13,7 @@ import {
   humanizeStem,
   kindFromClaudeType,
   listFiles,
+  listSymlinks,
   makeRule,
   readIfExists,
   readMarkdownWithFrontmatter,
@@ -31,6 +32,16 @@ function importLayerFile(
   scope: "user" | "project",
   result: CollectResult,
 ): void {
+  // Symlinked layer files are skipped with a warning, never followed:
+  // following one would import content from outside the project/home.
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) {
+      result.warnings.push(`skipped symlinked file (not followed): ${file}`);
+      return;
+    }
+  } catch {
+    // Missing file: readIfExists reports nothing, same as before.
+  }
   const text = readIfExists(file);
   if (text === null || text.trim() === "") return;
   result.sources.push(file);
@@ -48,6 +59,9 @@ function importLayerFile(
 }
 
 function importRulesDir(dir: string, scope: "user" | "project", result: CollectResult): void {
+  for (const link of listSymlinks(dir, ".md")) {
+    result.warnings.push(`skipped symlinked file (not followed): ${link}`);
+  }
   for (const file of listFiles(dir, ".md")) {
     const { data, body } = readMarkdownWithFrontmatter(file);
     const paths = data["paths"];
@@ -78,6 +92,9 @@ function importRulesDir(dir: string, scope: "user" | "project", result: CollectR
 function importAutoMemory(memoryDir: string, result: CollectResult): void {
   const indexFile = path.join(memoryDir, "MEMORY.md");
   const indexText = readIfExists(indexFile);
+  for (const link of listSymlinks(memoryDir, ".md")) {
+    result.warnings.push(`skipped symlinked file (not followed): ${link}`);
+  }
   const topicFiles = listFiles(memoryDir, ".md").filter((f) => path.basename(f) !== "MEMORY.md");
   const topicStems = new Set<string>();
   const topicTitles = new Set<string>();
@@ -140,6 +157,55 @@ function importAutoMemory(memoryDir: string, result: CollectResult): void {
   }
 }
 
+/** Subdirectory CLAUDE.md files (assessment §3.3): included as project
+ *  items with a scope note in the title ("CLAUDE.md (<relative dir>)").
+ *  Walks the project tree skipping .git, node_modules, and symlinked
+ *  directories (never followed); symlinked CLAUDE.md files are warned
+ *  about and skipped, like every other symlinked tool-native file. */
+function importSubdirectoryLayers(projectDir: string, result: CollectResult): void {
+  const imported = new Set(result.sources.map((s) => path.resolve(s)));
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isSymbolicLink()) {
+        if (e.name === "CLAUDE.md") {
+          result.warnings.push(`skipped symlinked file (not followed): ${full}`);
+        }
+        continue;
+      }
+      if (e.isDirectory()) {
+        if (e.name === ".git" || e.name === "node_modules") continue;
+        walk(full);
+        continue;
+      }
+      if (e.isFile() && e.name === "CLAUDE.md" && !imported.has(path.resolve(full))) {
+        const rel = path.relative(projectDir, path.dirname(full));
+        const text = readIfExists(full);
+        if (text === null || text.trim() === "") continue;
+        result.sources.push(full);
+        result.items.push(
+          makeRule({
+            title: `CLAUDE.md (${rel})`,
+            scope: "project",
+            origin: "human",
+            sourceTool: "claude",
+            sourcePath: full,
+            sourceKind: "claude:subdirectory",
+            body: text,
+          }),
+        );
+      }
+    }
+  };
+  walk(projectDir);
+}
+
 export function collectClaude(opts: ClaudeOptions): CollectResult {
   const home = opts.home ?? claudeHome();
   const result: CollectResult = { items: [], warnings: [], sources: [] };
@@ -162,6 +228,7 @@ export function collectClaude(opts: ClaudeOptions): CollectResult {
   importLayerFile(path.join(projectDir, ".claude", "CLAUDE.md"), ".claude/CLAUDE.md", "project", result);
   importLayerFile(path.join(projectDir, "CLAUDE.local.md"), "CLAUDE.local.md", "project", result);
   importRulesDir(path.join(projectDir, ".claude", "rules"), "project", result);
+  importSubdirectoryLayers(projectDir, result);
   const memoryDir = path.join(home, "projects", claudeProjectDirName(projectDir), "memory");
   if (fs.existsSync(memoryDir) && fs.statSync(memoryDir).isDirectory()) {
     importAutoMemory(memoryDir, result);

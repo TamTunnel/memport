@@ -51,8 +51,9 @@ your files, writes files, and stops.
    carries what Cursor was told in rules files, not what it learned.
 4. **Conflicts are never resolved by meaning.** Merges follow fixed
    deterministic rules (see FORMAT.md). If two items genuinely
-   contradict each other, the merge keeps both (one superseded) and
-   you adjudicate.
+   contradict each other, the merge keeps the winner as the item and
+   preserves the loser in full in `merge-report.md` (see FORMAT.md),
+   and you adjudicate.
 5. **Freshness is manual.** There is no live sync; a bundle goes stale
    the moment the source tool writes new memory. Re-import, don't
    assume.
@@ -60,6 +61,12 @@ your files, writes files, and stops.
    32 KiB; Claude truncates long on-demand files. A giant bundle
    exported whole will be cut by the target tool, not by Memport —
    the plan output warns with sizes, and you curate.
+7. **An unclosed fence self-bricks re-apply.** An item body with an
+   unclosed fenced code block renders fine the first time, but the
+   next apply refuses: the marker scanner treats everything after the
+   fence — including the END marker — as code. Nothing is lost (apply
+   refuses rather than rewriting); close or remove the fence in the
+   bundle item (or the rendered file) and re-apply.
 
 ## Quick start
 
@@ -99,7 +106,8 @@ print exactly what would change — files, item counts, lossy warnings,
 conflicts — and write nothing until you pass `--apply`. One documented
 exception: `convert` always materializes its intermediate bundle (a
 temp dir, or `--out` if given) so the plan can be computed; only the
-target-tool write is plan-gated.
+target-tool write is plan-gated. The intermediate bundle is kept, not
+cleaned up — delete it yourself when you are done with it.
 
 **Scope is never guessed.** Project scope requires `--project <dir>`;
 without `--scope` and without `--project`, `bundle`/`apply`/`convert`

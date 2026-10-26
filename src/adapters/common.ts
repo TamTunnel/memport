@@ -34,11 +34,29 @@ export function readIfExists(file: string): string | null {
   }
 }
 
+/** Regular files only (never symlinks). Symlinked files are NOT
+ *  followed on import: following them would read content from outside
+ *  the project/tool directory. Callers report them via listSymlinks. */
 export function listFiles(dir: string, suffix: string): string[] {
   try {
     return fs
       .readdirSync(dir, { withFileTypes: true })
       .filter((d) => d.isFile() && d.name.endsWith(suffix))
+      .map((d) => path.join(dir, d.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Symlinked files in a tool-native directory (skipped by listFiles).
+ *  Callers surface these as warnings so a skipped file is never
+ *  silent. */
+export function listSymlinks(dir: string, suffix: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isSymbolicLink() && d.name.endsWith(suffix))
       .map((d) => path.join(dir, d.name))
       .sort();
   } catch {

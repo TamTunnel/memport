@@ -8,7 +8,7 @@ import { collectClaude } from "./adapters/claude.ts";
 import { collectCodex } from "./adapters/codex.ts";
 import { collectCursor } from "./adapters/cursor.ts";
 import { claudeHome, codexHome } from "./adapters/common.ts";
-import type { ItemKind } from "./format.ts";
+import { normalizeTitle, type ItemKind } from "./format.ts";
 
 export interface ToolLocation {
   path: string;
@@ -97,6 +97,12 @@ export function scanStores(opts: ScanOptions): ToolScan[] {
     let total = 0;
     let counts: Partial<Record<ItemKind, number>> = {};
     let found = false;
+    // The global AGENTS.md chain file is collected in BOTH scopes (user
+    // chain and project chain start from it), so the same item would
+    // be counted twice. Dedupe across scopes by the re-import
+    // idempotence key (source_tool, source_path, normalized title) —
+    // raw ids cannot work here, because each collect mints fresh ULIDs.
+    const seen = new Set<string>();
     for (const scope of ["user", "project"] as const) {
       try {
         const collected = collectCodex({
@@ -105,10 +111,18 @@ export function scanStores(opts: ScanOptions): ToolScan[] {
           home: xh,
         });
         found = true;
-        total += collected.items.length;
-        const c = kindCounts(collected.items);
+        const fresh = collected.items.filter((it) => {
+          const key = `${it.meta.source_tool}\0${it.meta.source_path ?? ""}\0${normalizeTitle(it.meta.title)}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        total += fresh.length;
+        const c = kindCounts(fresh);
         for (const [k, v] of Object.entries(c)) counts[k as ItemKind] = (counts[k as ItemKind] ?? 0) + (v ?? 0);
-        warnings.push(...collected.warnings);
+        for (const w of collected.warnings) {
+          if (!warnings.includes(w)) warnings.push(w);
+        }
       } catch {
         // Absent store: not an error for scan.
       }

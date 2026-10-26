@@ -9,9 +9,13 @@ import * as crypto from "node:crypto";
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export function isUlid(value: unknown): value is string {
+  // ULID spec: 26 Crockford chars; the first char holds only the top 3
+  // bits of the 48-bit timestamp, so it must be 0–7. Anything higher
+  // overflows the timestamp field and is not a canonical ULID.
   return (
     typeof value === "string" &&
     value.length === 26 &&
+    "01234567".includes(value[0]) &&
     [...value].every((c) => CROCKFORD.includes(c))
   );
 }

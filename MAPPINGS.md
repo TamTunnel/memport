@@ -16,7 +16,7 @@ reference for what the plan means.
 | Claude `type: reference` → kind `reference` | None | — |
 | Claude memory with no/unknown `type` → kind `note` | Unknown category flattened to note | `source_kind` keeps `claude:type:<value>` (or `claude:memory`) |
 | Codex durable entries → kind `note` | Fine-grained entry structure unknown (undocumented schema) → coarse notes | Provenance flag `codex-generated` (tag); body kept verbatim |
-| Cursor activation (globs/description/alwaysApply) → other tools | No equivalent in Claude/Codex; activation becomes "always load" | Activation preserved in `source_kind`; re-export to Cursor restores it |
+| Cursor activation (globs/description/alwaysApply) → other tools | No equivalent in Claude/Codex; activation becomes "always load" | Preserved in bundle (`source_kind`); flattened on render (always load); re-export to Cursor restores it |
 | Any item → Codex AGENTS.md section | Recall-vs-instruction nuance lost (target is instructions, per Codex docs' own advice) | Plan output labels these items "rendered as instructions" |
 | Any item → Claude rules file | Learned items become always-loaded rules (no on-demand pull) | Plan output says so; auto-memory export (proper pull semantics) is v1.1 |
 | Bundle → target → bundle round-trip | NOT identical: target rendering drops metadata (ids where the format lacks frontmatter, activation, source paths) | Documented; the guarantee is bundle → bundle identity and plan-time loss reporting, not round-trip identity |
@@ -33,6 +33,10 @@ Plan loss classes as printed (and in `--json` output):
 - `rendered-as-instructions` — every item rendered into Codex.
 - `learned-becomes-always-loaded-rule` — an `agent-learned` item
   rendered into Claude rules.
+- `claude-paths-scoping-lost` — a path-scoped Claude rule
+  (`claude:rules:paths:*`) rendered to any always-loaded target
+  (Claude rules file, Codex section, Cursor `memport.mdc`): no target
+  carries per-item `paths`, so the scoping is lost.
 
 ## Import mappings
 
@@ -40,7 +44,7 @@ Plan loss classes as printed (and in `--json` output):
 
 | Source | Becomes | Kind / `source_kind` | Notes |
 |---|---|---|---|
-| `CLAUDE.md` (project, user), `.claude/CLAUDE.md`, `CLAUDE.local.md` | One `rule` item per file, whole file as body | `rule` / `claude:instruction` | Load order respected (project layers in file order); subdirectory on-demand files are not walked in v1 — only the project root layers and `.claude/rules/` |
+| `CLAUDE.md` (project, user), `.claude/CLAUDE.md`, `CLAUDE.local.md` | One `rule` item per file, whole file as body | `rule` / `claude:instruction` | Load order respected (project layers in file order); subdirectory `CLAUDE.md` files are walked as project items titled `CLAUDE.md (<relative dir>)` (`claude:subdirectory`) |
 | `.claude/rules/*.md` (project and `~/.claude/rules/`) | One `rule` item per file, body minus frontmatter | `rule` / `claude:rules` (or `claude:rules:paths:<list>` when `paths` is set) | `paths` is the only frontmatter field Claude reads; other fields are ignored on import, matching Claude |
 | Auto-memory topic file (`~/.claude/projects/<project>/memory/*.md`) | One item per file | Kind from frontmatter `type` (see loss table) / `claude:type:*` or `claude:memory` | Read-only; never modifies the memory directory. Unknown `type` values map to `note` with the value preserved in `source_kind` |
 | Auto-memory index (`MEMORY.md`) | One `note` item per index line that is not a heading and does not reference a topic file | `note` / `claude:memory:index` | Lines referencing a topic file are skipped (the topic file itself is the item); duplicate titles are skipped |

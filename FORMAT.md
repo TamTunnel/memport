@@ -91,9 +91,12 @@ hold different texts for the same item.
 `validate` fails (non-zero) on any of: missing or unparseable
 manifest, unknown major format version, missing item file, manifest
 entry whose `file` escapes the bundle (absolute path or `..`),
-manifest id not matching the item id, file name not matching the item
-id, manifest SHA-256 not matching file bytes (forged or corrupted),
-missing required fields, unknown `kind`/`scope`/`origin`/`status`
+symlinked manifest, items directory, or item file (symlinks are
+refused outright — a bundle must be regular files inside its own
+directory), manifest id not matching the item id, file name not
+matching the item id, manifest SHA-256 not matching file bytes
+(forged or corrupted), extra unlisted files in `items/`, missing
+required fields, unknown `kind`/`scope`/`origin`/`status`
 values, non-ULID `id`/`supersedes`, non-string `tags`, duplicate ids,
 or a `supersedes` target that does not exist in the bundle.
 
@@ -105,6 +108,11 @@ unrecognized — never silently imports half a store. See MAPPINGS.md
 for the per-tool source tables. Re-importing into an existing bundle
 directory merges with id reuse (see Identity); writing into a
 non-empty directory that is not a bundle is refused.
+
+Symlinked tool-native files are skipped with a warning; Memport never
+follows symlinks on import (following one would read content from
+outside the project or tool directory). Symlinked directories are not
+walked on the subdirectory search either.
 
 ## Export (apply)
 
@@ -126,6 +134,13 @@ Write discipline (see README for the narrative version):
 - Missing, duplicated, misordered markers, or markers inside a fenced
   code block make apply **refuse** (fail closed). It never appends a
   second section and never rewrites surrounding content.
+- An item body with an unclosed fenced code block renders fine the
+  first time, but the next apply refuses: the marker scanner treats
+  everything after the fence — including the END marker — as code.
+  Nothing is lost (apply refuses rather than rewriting); close or
+  remove the fence in the bundle item (or the rendered file) and
+  re-apply. This is a documented limitation, not a bug to work around
+  by weakening marker handling.
 - Before the first write to any target file, Memport copies it to
   `<file>.memport-bak`. An existing backup is never overwritten
   without `--force`. A second apply that changes nothing writes
@@ -137,7 +152,8 @@ Write discipline (see README for the narrative version):
   Claude strips HTML comments before injection.
 - `convert` always materializes its intermediate bundle (temp dir, or
   `--out` if given) so the plan can be computed; only the target-tool
-  write is plan-gated.
+  write is plan-gated. The intermediate bundle is kept, not cleaned
+  up — delete it yourself when you are done with it.
 
 ## Merge (`memport merge`)
 
@@ -149,11 +165,12 @@ non-zero on any conflict and writes nothing.
 1. Same id, identical normalized body → one item (dedupe). Body
    normalization: line endings, per-line trailing space, blank-run
    collapsing, outer trim. Deliberately not semantic.
-2. Same id, different body → conflict. Winner: `human` origin beats
+2. Same id, different body → conflict. Winner: `active` status beats
+   `disputed` beats `superseded`, then `human` origin beats
    `agent-learned` beats `imported`; ties break by newer `updated`,
-   then toward the first bundle. The loser is preserved **verbatim in
-   `merge-report.md`** (see deviation note below) and the winner is
-   kept.
+   then toward the first bundle. The loser is preserved as its
+   original file text in `merge-report.md` (see deviation note below)
+   and the winner is kept.
 3. Different ids, identical normalized (kind, scope, body) text →
    dedupe to the older id (older `created`, then smaller id); the
    dropped source is noted in the merge report.
@@ -167,9 +184,9 @@ winner's supersedes points at it." That cannot hold literally in a
 `memport/1` bundle: one file per id, `validate` forbids duplicate ids,
 and rule 5 forbids changing ids — winner and loser share one id, so
 both cannot be items in the output bundle. The implementation
-therefore preserves the loser verbatim in `merge-report.md`, which
-ships inside the output bundle, and leaves the winner's `supersedes`
-unset (a self-pointer would be a lie). The "nothing is ever deleted"
+therefore preserves the loser's original file text in
+`merge-report.md`, which ships inside the output bundle, and leaves
+the winner's `supersedes` unset (a self-pointer would be a lie). The "nothing is ever deleted"
 guarantee holds: the loser text is in the output bundle, auditable,
 and re-importable by hand. `supersedes` in item frontmatter remains
 for hand-authored replacement links (as in the golden-decision
@@ -197,7 +214,7 @@ memport scan [--project <dir>] [--json]
 memport bundle --from <tool> [--scope user|project] [--project <dir>] --out <dir> [--apply] [--json]
 memport apply --bundle <dir> --to <tool> [--scope user|project] [--project <dir>] [--apply] [--force] [--allow-secrets] [--json]
 memport convert --from <tool> --to <tool> [--scope user|project] [--project <dir>] [--out <dir>] [--apply] [--force] [--allow-secrets] [--json]
-memport merge <bundleA> <bundleB> --out <dir> [--apply] [--strict] [--json]
+memport merge <bundleA> <bundleB> --out <dir> [--apply] [--strict] [--allow-secrets] [--json]
 memport validate <dir> [--json]
 memport list <dir> [--kind <kind>] [--scope <scope>] [--json]
 ```
@@ -207,5 +224,5 @@ Global flags: `--json` (machine-readable output for every command),
 Mutating commands default to plan mode; `--apply` executes.
 `--force` allows overwriting an existing `.memport-bak` backup.
 `--allow-secrets` overrides the secret-flag refusal on `apply` /
-`convert` (review the plan list first). `--strict` makes `merge`
+`convert` / `merge` (review the plan list first). `--strict` makes `merge`
 fail on any conflict.

@@ -242,6 +242,36 @@ function manifestItemPath(bundleDir: string, entryFile: string): string {
   return path.join(bundleDir, normalized);
 }
 
+/** Refuse symlinked paths: bundle contents must be regular files inside
+ *  the bundle directory, never links (in or out). Missing paths are the
+ *  caller's problem (reported as missing, not as a symlink). */
+export function refuseSymlink(filePath: string, label: string): void {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(filePath);
+  } catch {
+    return;
+  }
+  if (st.isSymbolicLink()) {
+    throw new MemportError(`${label}: symlinked file refused (${filePath})`);
+  }
+}
+
+/** Refuse any item path whose real location escapes the bundle dir
+ *  (covers symlinked parent directories, not just symlinked files). */
+function refuseEscape(bundleDir: string, filePath: string, label: string): void {
+  let realFile: string;
+  try {
+    realFile = fs.realpathSync(filePath);
+  } catch {
+    return; // Missing: the caller's read reports it.
+  }
+  const realBase = fs.realpathSync(bundleDir);
+  if (realFile !== realBase && !realFile.startsWith(realBase + path.sep)) {
+    throw new MemportError(`${label}: item file resolves outside the bundle (refused): ${filePath}`);
+  }
+}
+
 export interface LoadedBundle {
   dir: string;
   manifest: Manifest;
@@ -256,6 +286,9 @@ export interface LoadedBundle {
  *  validateBundle(), not here. */
 export function readBundle(bundleDir: string): LoadedBundle {
   const manifestPath = path.join(bundleDir, "memport.json");
+  // The manifest is the bundle's trust root: a symlinked manifest would
+  // let a "bundle" front for content living anywhere on disk.
+  refuseSymlink(manifestPath, "memport.json");
   let raw: string;
   try {
     raw = fs.readFileSync(manifestPath, "utf8");
@@ -283,6 +316,9 @@ export function readBundle(bundleDir: string): LoadedBundle {
   if (!Array.isArray(manifest.items)) {
     throw new MemportError(`memport.json in ${bundleDir} has no 'items' array`);
   }
+  // A symlinked items/ directory would route every item read outside
+  // the bundle even though each file itself is regular.
+  refuseSymlink(path.join(bundleDir, "items"), "items/");
   const items: MemportItem[] = [];
   const entries: ManifestEntry[] = [];
   for (const entry of manifest.items as ManifestEntry[]) {
@@ -290,6 +326,8 @@ export function readBundle(bundleDir: string): LoadedBundle {
       throw new MemportError(`memport.json in ${bundleDir} has a malformed items entry`);
     }
     const filePath = manifestItemPath(bundleDir, entry.file);
+    refuseSymlink(filePath, entry.file);
+    refuseEscape(bundleDir, filePath, entry.file);
     let text: string;
     try {
       text = fs.readFileSync(filePath, "utf8");
@@ -320,12 +358,18 @@ export function writeBundle(
 ): Manifest {
   const sorted = [...items].sort((a, b) => (a.meta.id < b.meta.id ? -1 : a.meta.id > b.meta.id ? 1 : 0));
   const itemsDir = path.join(bundleDir, "items");
+  // Refuse before mkdir: mkdirSync(recursive) silently succeeds on an
+  // existing symlinked directory, and every write after it would land
+  // in the link target. Same for pre-existing item/manifest links.
+  refuseSymlink(itemsDir, "items/");
   fs.mkdirSync(itemsDir, { recursive: true });
   const entries: ManifestEntry[] = [];
   for (const item of sorted) {
     const file = `items/${itemFileName(item.meta.id)}`;
     const text = serializeItem(item);
-    fs.writeFileSync(path.join(bundleDir, file), text, "utf8");
+    const dest = path.join(bundleDir, file);
+    refuseSymlink(dest, file);
+    fs.writeFileSync(dest, text, "utf8");
     entries.push({ id: item.meta.id, file, sha256: sha256Hex(text) });
   }
   const manifest: Manifest = {
@@ -337,7 +381,9 @@ export function writeBundle(
     items: entries,
     notes: meta.notes ?? [],
   };
-  fs.writeFileSync(path.join(bundleDir, "memport.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  const manifestPath = path.join(bundleDir, "memport.json");
+  refuseSymlink(manifestPath, "memport.json");
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
   return manifest;
 }
 
@@ -377,7 +423,46 @@ export function validateBundle(bundleDir: string): string[] {
     }
     errors.push(...validateItemFields(item.meta, label));
   }
+  // Extra unlisted files in items/ (stale, planted, or forgotten): the
+  // manifest is the bundle's inventory, and anything outside it is
+  // untrusted content riding along with a valid-looking bundle.
+  try {
+    const listed = new Set(loaded.entries.map((e) => e.file));
+    for (const name of fs.readdirSync(path.join(bundleDir, "items"))) {
+      const rel = `items/${name}`;
+      if (!listed.has(rel)) {
+        errors.push(`${rel}: file in items/ is not listed in the manifest`);
+      }
+    }
+  } catch {
+    // No items/ dir: the item reads above already reported missing files.
+  }
   for (const item of loaded.items) {
+    const target = item.meta.supersedes;
+    if (target !== undefined && target !== null && !ids.has(target)) {
+      errors.push(`item ${item.meta.id}: supersedes target '${target}' does not exist in this bundle`);
+    }
+  }
+  return errors;
+}
+
+/** Validate an in-memory item list (merge output, before any write):
+ *  duplicate ids, supersedes targets, field vocabularies. No manifest
+ *  or hash checks here — those belong to directory validation. */
+export function validateOutputItems(items: MemportItem[]): string[] {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  const seen = new Set<string>();
+  for (const item of items) {
+    const label = `items/${itemFileName(item.meta.id)}`;
+    if (seen.has(item.meta.id)) {
+      errors.push(`${label}: duplicate id '${item.meta.id}'`);
+    }
+    seen.add(item.meta.id);
+    ids.add(item.meta.id);
+    errors.push(...validateItemFields(item.meta, label));
+  }
+  for (const item of items) {
     const target = item.meta.supersedes;
     if (target !== undefined && target !== null && !ids.has(target)) {
       errors.push(`item ${item.meta.id}: supersedes target '${target}' does not exist in this bundle`);

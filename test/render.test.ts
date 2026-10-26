@@ -148,3 +148,69 @@ describe("render: planApply (codex budget + own-file targets)", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("render: planApply (fix round)", () => {
+  function setup(items: MemportItem[]) {
+    const dir = tmpDir();
+    const proj = path.join(dir, "proj");
+    fs.mkdirSync(proj, { recursive: true });
+    const bundleDir = path.join(dir, "bundle");
+    writeBundle(bundleDir, items, { source_tool: "hand", source_path: null, project: null });
+    return { dir, proj, bundle: readBundle(bundleDir) };
+  }
+
+  it("lists rendered items (id + title, title order) in the plan (F2/L3)", () => {
+    const { dir, proj, bundle } = setup([sampleItem("Zulu"), sampleItem("Alpha")]);
+    const plan = planApply(bundle, { tool: "codex", scope: "project", projectDir: proj });
+    assert.deepEqual(
+      plan.renderedItems.map((i) => i.title),
+      ["Alpha", "Zulu"],
+    );
+    assert.ok(plan.renderedItems.every((i) => typeof i.id === "string" && i.id.length === 26));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("warns about identity loss for codex and claude targets, not cursor (F4)", () => {
+    const { dir, proj, bundle } = setup([sampleItem("One")]);
+    const codex = planApply(bundle, { tool: "codex", scope: "project", projectDir: proj });
+    assert.ok(codex.warnings.some((w) => w.includes("Identity loss on re-import")), JSON.stringify(codex.warnings));
+    const claude = planApply(bundle, { tool: "claude", scope: "project", projectDir: proj });
+    assert.ok(claude.warnings.some((w) => w.includes("Identity loss on re-import")), JSON.stringify(claude.warnings));
+    const cursor = planApply(bundle, { tool: "cursor", scope: "project", projectDir: proj });
+    assert.ok(!cursor.warnings.some((w) => w.includes("Identity loss on re-import")), JSON.stringify(cursor.warnings));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports path-scoping loss for path-scoped Claude rules (M11)", () => {
+    const item = sampleItem("Scoped rule");
+    item.meta.source_kind = "claude:rules:paths:src/**";
+    const { dir, proj, bundle } = setup([item]);
+    const plan = planApply(bundle, { tool: "claude", scope: "project", projectDir: proj });
+    const loss = plan.losses.find((l) => l.class === "claude-paths-scoping-lost");
+    assert.ok(loss && loss.count === 1, JSON.stringify(plan.losses));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("warns when the apply target itself is a symlink (H1/L6)", () => {
+    const dir = tmpDir();
+    const proj = path.join(dir, "proj");
+    fs.mkdirSync(proj, { recursive: true });
+    const victim = path.join(dir, "victim.md");
+    fs.writeFileSync(victim, "# Victim\n");
+    fs.symlinkSync(victim, path.join(proj, "AGENTS.md"));
+    const bundleDir = path.join(dir, "bundle");
+    writeBundle(bundleDir, [sampleItem("One")], { source_tool: "hand", source_path: null, project: null });
+    const plan = planApply(readBundle(bundleDir), { tool: "codex", scope: "project", projectDir: proj });
+    assert.ok(plan.warnings.some((w) => w.includes("is a symlink")), JSON.stringify(plan.warnings));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("plan secretFlags carry pattern names only, never excerpts (M10/H4)", () => {
+    const { dir, proj, bundle } = setup([sampleItem("Leaky", "Key: sk-ant-api03-abcdefghijklmnopqrst")]);
+    const plan = planApply(bundle, { tool: "codex", scope: "project", projectDir: proj });
+    assert.equal(plan.secretFlags.length, 1);
+    assert.deepEqual(plan.secretFlags[0].patterns, ["anthropic-key"]);
+    assert.ok(!JSON.stringify(plan.secretFlags).includes("sk-ant-api03"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

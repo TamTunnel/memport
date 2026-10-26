@@ -6,6 +6,9 @@ import * as path from "node:path";
 import {
   mintItem,
   readBundle,
+  sha256Hex,
+  validateBundle,
+  validateOutputItems,
   writeBundle,
   type MemportItem,
 } from "../src/format.ts";
@@ -121,5 +124,94 @@ describe("merge", () => {
     const res = mergeBundles(readBundle(path.join(fix, "golden-basic")), readBundle(path.join(fix, "golden-decision")));
     assert.equal(res.items.length, 5);
     assert.equal(res.conflicts.length, 0);
+  });
+
+  it("phase-2 dedupe drops a dangling supersedes link instead of producing an invalid bundle (H2)", () => {
+    const shared = item({ title: "Shared" }, "Shared body.");
+    shared.meta.created = "2026-01-01T00:00:00.000Z";
+    const dup = item({ title: "Shared" }, "Shared body.");
+    dup.meta.created = "2026-06-01T00:00:00.000Z";
+    const why = item({ title: "Why" }, "Why body.");
+    why.meta.supersedes = dup.meta.id;
+    const res = mergeBundles(bundle(a, [why, dup]), bundle(b, [shared]));
+    const mergedWhy = res.items.find((i) => i.meta.id === why.meta.id);
+    assert.ok(mergedWhy);
+    assert.equal(mergedWhy.meta.supersedes, null);
+    assert.deepEqual(validateOutputItems(res.items), []);
+    assert.ok(res.report.includes("Supersedes links dropped"), res.report);
+    const out = tmpDir();
+    writeBundle(out, res.items, { source_tool: "memport", source_path: null, project: null });
+    assert.deepEqual(validateBundle(out), []);
+    fs.rmSync(out, { recursive: true, force: true });
+  });
+
+  it("status ranks before origin in winner selection (L5)", () => {
+    const supersededHuman = item({ title: "Contested", status: "superseded" }, "Human old version.");
+    const activeImported = { ...supersededHuman, body: "Imported new version." };
+    activeImported.meta = { ...supersededHuman.meta, origin: "imported", status: "active" };
+    const res = mergeBundles(bundle(a, [supersededHuman]), bundle(b, [activeImported]));
+    assert.equal(res.items[0].body, "Imported new version.");
+    assert.equal(res.items[0].meta.status, "active");
+  });
+
+  it("identical-body dedupe keeps the active copy over a superseded one (L5)", () => {
+    const sup = item({ title: "Same", status: "superseded" }, "Same body.");
+    const act = { ...sup, body: "Same body.\n" };
+    act.meta = { ...sup.meta, status: "active" };
+    const res = mergeBundles(bundle(a, [sup]), bundle(b, [act]));
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].meta.status, "active");
+  });
+
+  it("flags a conflict whose winner is superseded (L5)", () => {
+    const one = item({ title: "Old", status: "superseded" }, "Version one.");
+    const two = { ...one, body: "Version two." };
+    two.meta = { ...one.meta, status: "superseded" };
+    const res = mergeBundles(bundle(a, [one]), bundle(b, [two]));
+    assert.equal(res.conflicts.length, 1);
+    assert.equal(res.supersededWinners.length, 1);
+    assert.ok(res.report.includes("winner is superseded"), res.report);
+  });
+
+  it("merge report preserves the loser's original file text, not a re-serialization (M8/L7)", () => {
+    const loser = item({ title: "Contested" }, "Loser version.");
+    loser.meta.origin = "agent-learned";
+    writeBundle(a, [loser], { source_tool: "hand", source_path: null, project: null });
+    const file = path.join(a, "items", `${loser.meta.id}.md`);
+    const text = fs.readFileSync(file, "utf8");
+    const withCustom = text.replace(/^---\n/, "---\nx_custom: probe-123\n");
+    assert.notEqual(withCustom, text);
+    fs.writeFileSync(file, withCustom);
+    const manifest = JSON.parse(fs.readFileSync(path.join(a, "memport.json"), "utf8")) as {
+      items: { sha256: string }[];
+    };
+    manifest.items[0].sha256 = sha256Hex(withCustom);
+    fs.writeFileSync(path.join(a, "memport.json"), JSON.stringify(manifest, null, 2));
+    assert.deepEqual(validateBundle(a), []);
+    const winner = { ...loser, body: "Winner version." };
+    winner.meta = { ...loser.meta, origin: "human" };
+    const res = mergeBundles(readBundle(a), bundle(b, [winner]));
+    assert.equal(res.conflicts.length, 1);
+    assert.ok(res.report.includes("x_custom: probe-123"), res.report);
+  });
+
+  it("secret-scans merge inputs and reports pattern names only (H5)", () => {
+    const fakeKey = "sk-ant-api03-abcdefghijklmnopqrst";
+    const loser = item({ title: "Leaky" }, `The key is ${fakeKey}.`);
+    loser.meta.origin = "agent-learned";
+    const survivor = item({ title: "Also leaky" }, `Another key ${fakeKey} here.`);
+    const winner = { ...loser, body: "Clean version." };
+    winner.meta = { ...loser.meta, origin: "human" };
+    const res = mergeBundles(bundle(a, [loser, survivor]), bundle(b, [winner]));
+    assert.equal(res.conflicts.length, 1);
+    const loserFlag = res.secretFlags.find((f) => f.role === "loser");
+    assert.ok(loserFlag);
+    assert.deepEqual(loserFlag.patterns, ["anthropic-key"]);
+    assert.ok(res.secretFlags.some((f) => f.role === "item"));
+    // Pattern names only in the structured flags — the key itself never
+    // appears there (the verbatim loser text in the report body still
+    // contains it by design: flagged, not redacted, for audit).
+    assert.ok(!JSON.stringify(res.secretFlags).includes(fakeKey));
+    assert.ok(res.report.includes("Secret flags (review before sharing)"), res.report);
   });
 });

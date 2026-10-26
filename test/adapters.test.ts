@@ -96,3 +96,57 @@ describe("adapters: cursor", () => {
     );
   });
 });
+
+describe("adapters: fix round (subdirectory walk + symlink warnings)", () => {
+  it("walks subdirectory CLAUDE.md files as project items with scope notes (F3)", () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, "CLAUDE.md"), "Root rules.\n");
+    fs.mkdirSync(path.join(dir, "docs", "guide"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "docs", "CLAUDE.md"), "Docs rules.\n");
+    fs.writeFileSync(path.join(dir, "docs", "guide", "CLAUDE.md"), "Guide rules.\n");
+    const r = collectClaude({ scope: "project", projectDir: dir, home: path.join(FIX, "claude-home") });
+    const byTitle = new Map(r.items.map((i) => [i.meta.title, i.meta.source_kind]));
+    assert.equal(byTitle.get("CLAUDE.md (project)"), "claude:instruction");
+    assert.equal(byTitle.get("CLAUDE.md (docs)"), "claude:subdirectory");
+    assert.equal(byTitle.get("CLAUDE.md (docs/guide)"), "claude:subdirectory");
+    assert.ok(r.items.every((i) => i.meta.scope === "project"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("warns and skips symlinked tool-native files instead of following them (M12)", () => {
+    const dir = tmpDir();
+    const outside = tmpDir();
+    // Claude: symlinked rule in .claude/rules/.
+    fs.writeFileSync(path.join(dir, "CLAUDE.md"), "Root rules.\n");
+    fs.mkdirSync(path.join(dir, ".claude", "rules"), { recursive: true });
+    const victim = path.join(outside, "victim.md");
+    fs.writeFileSync(victim, "Outside content that must never be imported.\n");
+    fs.symlinkSync(victim, path.join(dir, ".claude", "rules", "linked.md"));
+    const claude = collectClaude({ scope: "project", projectDir: dir, home: path.join(FIX, "claude-home") });
+    assert.ok(claude.warnings.some((w) => w.includes("skipped symlinked file") && w.includes("linked.md")));
+    assert.ok(!claude.sources.some((s) => s.includes("linked.md")));
+    assert.ok(!claude.items.some((i) => i.body.includes("Outside content")));
+    // Cursor: symlinked .mdc rule.
+    const proj = tmpDir();
+    fs.mkdirSync(path.join(proj, ".cursor", "rules"), { recursive: true });
+    fs.writeFileSync(path.join(proj, ".cursor", "rules", "real.mdc"), "---\nalwaysApply: true\n---\nReal rule.\n");
+    fs.symlinkSync(victim, path.join(proj, ".cursor", "rules", "linked.mdc"));
+    const cursor = collectCursor({ scope: "project", projectDir: proj });
+    assert.ok(cursor.warnings.some((w) => w.includes("skipped symlinked file") && w.includes("linked.mdc")));
+    assert.ok(!cursor.items.some((i) => i.body.includes("Outside content")));
+    assert.equal(cursor.items.length, 1);
+    // Codex: symlinked memory summary.
+    const home = tmpDir();
+    fs.writeFileSync(path.join(home, "AGENTS.md"), "Global.\n");
+    fs.mkdirSync(path.join(home, "memories"), { recursive: true });
+    fs.writeFileSync(path.join(home, "memories", "real.md"), "Real summary.\n");
+    fs.symlinkSync(victim, path.join(home, "memories", "linked.md"));
+    const codex = collectCodex({ scope: "user", home });
+    assert.ok(codex.warnings.some((w) => w.includes("skipped symlinked file") && w.includes("linked.md")));
+    assert.ok(!codex.items.some((i) => i.body.includes("Outside content")));
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+});
