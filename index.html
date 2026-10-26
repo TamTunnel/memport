@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memport — sample memory move</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#1a1a1a}
+h1{font-size:1.9rem;line-height:1.2}h2{margin-top:2.2rem;border-top:1px solid #ddd;padding-top:1rem}
+code{word-break:break-all;background:#f4f4f4;padding:.15rem .35rem;border-radius:4px;font-size:.9em}
+pre{background:#f4f4f4;padding:1rem;border-radius:6px;overflow-x:auto;font-size:.85em}
+pre code{background:none;padding:0}
+.step{background:#f8f9fa;border-left:4px solid #2a7ae2;padding:1rem 1.2rem;margin:1.2rem 0;border-radius:0 6px 6px 0}
+.warn{background:#fff8e6;border-left-color:#e6a200}
+video{width:100%;max-width:860px;border-radius:8px;background:#000}
+.small{color:#555;font-size:.9em}
+a{color:#2a7ae2}
+</style>
+</head>
+<body>
+
+<h1>Memport — sample memory move</h1>
+<p><strong>Carry what your agents know between tools.</strong> Claude Code,
+Codex, and Cursor each store memory differently — project files, rule
+directories, generated summaries — so switching tools today means starting
+from scratch. Memport converts that memory into one open bundle format
+(<code>memport/1</code>: a JSON manifest with SHA-256 hashes plus one markdown
+file per item) and renders it back into any supported tool. This page walks
+through a genuine run of the Memport CLI — not a mockup. Every command and
+output below is real output from a local demo run.</p>
+
+<p class="warn step"><strong>Sample data only.</strong> All projects, rules, and
+identities are demo fixtures. <strong>Honest limits:</strong> exported items are
+context, not enforcement — the target tool can still ignore them. Codex import
+is summaries-only (its memory store is vendor-generated state). Cursor carries
+rules only (its Memories feature was removed in 2.1.x). Conflicts are never
+resolved by meaning — merges pick a winner by status, origin, and recency, and
+preserve the loser. Mutating commands default to plan mode and write nothing
+until you pass <code>--apply</code>.</p>
+
+<h2 id="video">Explainer video</h2>
+<video controls preload="metadata" poster="">
+  <source src="memport-explainer.mp4" type="video/mp4">
+  Your browser does not support the video element.
+</video>
+<p class="small">62 seconds, captioned on-screen. The problem, the solution, and the CLI demo below.</p>
+
+<h2>1. Scan: what the tools actually store</h2>
+<div class="step">
+<p>One project, three tools, three different answers. Scan finds each tool's
+memory in place before anything moves.</p>
+<pre><code>$ memport scan --project ./fixtures/claude-project
+Scan (project: ./fixtures/claude-project)
+
+claude: 6 item(s)
+  found  ./fixtures/claude-home/CLAUDE.md
+  found  ./fixtures/claude-home/rules
+  found  ./fixtures/claude-project/CLAUDE.md
+  found  ./fixtures/claude-project/.claude/CLAUDE.md
+  found  ./fixtures/claude-project/.claude/rules
+  absent ./fixtures/claude-home/projects
+  kinds: rule=6
+  warning: no Claude auto-memory directory at ./fixtures/claude-home/projects/test-fixtures-claude-project/memory (skipped)
+
+codex: 3 item(s)
+  found  ./fixtures/codex-home/AGENTS.md
+  found  ./fixtures/codex-home/memories
+  absent ./fixtures/claude-project/AGENTS.md
+  kinds: rule=2, note=1
+  warning: Codex memories are vendor-generated state: imported summaries are coarse notes, not fine-grained entries.
+  note: Codex memories are generated state; import is summaries-only.
+
+cursor: store not found
+  absent ./fixtures/claude-project/.cursor/rules
+  absent ./fixtures/claude-project/.cursorrules
+  absent ./fixtures/claude-project/AGENTS.md
+  note: Cursor has no durable memory store in current versions (Memories removed in 2.1.x); rules only.</code></pre>
+</div>
+
+<h2>2. Bundle: Claude memory into one portable bundle</h2>
+<div class="step">
+<p>Four project rules become four items with stable ULID identities. The bundle
+is a directory you can copy, commit, or send — and <code>validate</code> checks
+every item hash before anything is trusted.</p>
+<pre><code>$ memport bundle --from claude --scope project --project ./fixtures/claude-project --out ./demo/bundle-claude --apply
+Bundle plan: claude (project) → ./demo/bundle-claude
+  collected: 4 item(s) (rule=4)
+  reused ids: 0, new: 4, kept from existing bundle: 0
+  warning: no Claude auto-memory directory at ./fixtures/claude-home/projects/test-fixtures-claude-project/memory (skipped)
+  import losses:
+  (none)
+  WROTE bundle to ./demo/bundle-claude (4 items).</code></pre>
+<pre><code>$ memport list ./demo/bundle-claude
+01M5V9CYGHFQACFHXAFY901PV3 | rule | .claude/CLAUDE.md | project | active | claude
+01M5V9CYGHYX9R882AHB04JV5W | rule | CLAUDE.md (project) | project | active | claude
+01M5V9CYGJD0JP0HY9J5WVFG75 | rule | deploy | project | active | claude
+01M5V9CYGKFMG1ESWM9103KTM1 | rule | testing | project | active | claude</code></pre>
+</div>
+
+<h2>3. Apply: the same bundle lands in Codex</h2>
+<div class="step">
+<p>Apply renders the bundle into Codex's <code>AGENTS.md</code> inside a delimited
+section, one provenance line per item, so the import is auditable and
+re-applying is a clean noop. The plan names every item and its losses before
+anything is written — and warns plainly that per-item ids do not survive
+re-import of the rendered file.</p>
+<pre><code>$ memport apply --bundle ./demo/bundle-claude --to codex --scope project --project ./demo/codex-target --apply
+Apply plan → ./demo/codex-target/AGENTS.md
+  action: create
+  backup: none needed (target does not exist yet)
+  rendered: 4 active item(s); skipped: 0 superseded, 0 disputed
+    - .claude/CLAUDE.md (01M5V9CYGHFQACFHXAFY901PV3)
+    - CLAUDE.md (project) (01M5V9CYGHYX9R882AHB04JV5W)
+    - deploy (01M5V9CYGJD0JP0HY9J5WVFG75)
+    - testing (01M5V9CYGKFMG1ESWM9103KTM1)
+  losses:
+  - rendered-as-instructions: 4 (e.g. .claude/CLAUDE.md, CLAUDE.md (project), deploy)
+  - claude-paths-scoping-lost: 1 (e.g. testing)
+  warning: Identity loss on re-import: per-item ids do not survive re-import of the rendered AGENTS.md section — re-import mints new ids unless the title-match idempotence rule matches (same source tool, source path, normalized title). Keep the bundle as the source of truth.
+WROTE ./demo/codex-target/AGENTS.md (create).</code></pre>
+<p>The rendered section (excerpt):</p>
+<pre><code>&lt;!-- BEGIN MEMPORT --&gt;
+## .claude/CLAUDE.md
+
+*Memport · id 01M5V9CYGHFQACFHXAFY901PV3 · from claude (./fixtures/claude-project/.claude/CLAUDE.md) · origin human · kind rule · scope project*
+
+# Demo Shop Local Notes
+
+The staging API lives at https://staging.example.invalid.
+
+## CLAUDE.md (project)
+
+*Memport · id 01M5V9CYGHYX9R882AHB04JV5W · from claude (./fixtures/claude-project/CLAUDE.md) · origin human · kind rule · scope project*
+
+# Demo Shop Project
+
+Always run the test suite before committing.
+Use TypeScript strict mode for all new modules.
+
+## deploy
+
+*Memport · id 01M5V9CYGJD0JP0HY9J5WVFG75 · from claude (./fixtures/claude-project/.claude/rules/deploy.md) · origin human · kind rule · scope project*
+
+# Deploy rules
+
+Deployments happen on Fridays only, after the release notes are written.
+
+## testing
+
+*Memport · id 01M5V9CYGKFMG1ESWM9103KTM1 · from claude (./fixtures/claude-project/.claude/rules/testing.md) · origin human · kind rule · scope project*
+
+…</code></pre>
+</div>
+
+<h2>4. Convert: the same memory as Cursor rules</h2>
+<div class="step">
+<p>Convert goes straight from one tool to another, keeping an intermediate
+bundle on disk so the move is inspectable. Cursor gets a single
+<code>memport.mdc</code> rules file — rules only, because that is all Cursor
+carries.</p>
+<pre><code>$ memport convert --from claude --to cursor --scope project --project ./demo/project-v3 --out ./demo/bundle-cursor3 --apply
+Convert: intermediate bundle kept at ./demo/bundle-cursor3 (4 items).
+  import warning: no Claude auto-memory directory at ./fixtures/claude-home/projects/-tmp-memport-demo-project-v3/memory (skipped)
+  import losses:
+  (none)
+Apply plan → ./demo/project-v3/.cursor/rules/memport.mdc
+  action: create
+  backup: none needed (target does not exist yet)
+  rendered: 4 active item(s); skipped: 0 superseded, 0 disputed
+    - .claude/CLAUDE.md (01M5V9FYTKQPXYY7W3BM34YGNN)
+    - CLAUDE.md (project) (01M5V9FYTKW0WHFW1W2BXPBS2V)
+    - deploy (01M5V9FYTMVHMHHZ4BSPC6WP0K)
+    - testing (01M5V9FYTN2V4RP5ZKGPNT91AC)
+  losses:
+  - claude-paths-scoping-lost: 1 (e.g. testing)
+WROTE ./demo/project-v3/.cursor/rules/memport.mdc (create).</code></pre>
+<p>The rendered Cursor file (excerpt):</p>
+<pre><code>---
+alwaysApply: true
+description: "Memport import: 4 item(s) from claude"
+---
+## .claude/CLAUDE.md
+
+*Memport · id 01M5V9FYTKQPXYY7W3BM34YGNN · from claude (./demo/project-v3/.claude/CLAUDE.md) · origin human · kind rule · scope project*
+
+# Demo Shop Local Notes
+
+The staging API lives at https://staging.example.invalid.
+
+## CLAUDE.md (project)
+
+…</code></pre>
+</div>
+
+<h2>5. Merge: an edited copy supersedes, nothing is deleted</h2>
+<div class="step">
+<p>Re-bundling the same project after an edit reuses the same ids, so the old
+and new bundles share one item with two bodies. Merge picks the newer version
+as the winner — and preserves the loser verbatim in <code>merge-report.md</code>
+inside the output bundle. The merged bundle validates cleanly.</p>
+<pre><code>$ memport bundle --from claude --scope project --project ./demo/project-v1 --out ./demo/bundle-a --apply
+Bundle plan: claude (project) → ./demo/bundle-a
+  collected: 4 item(s) (rule=4)
+  reused ids: 4, new: 0, kept from existing bundle: 4
+  warning: no Claude auto-memory directory at ./fixtures/claude-home/projects/-tmp-memport-demo-project-v1/memory (skipped)
+  import losses:
+  (none)
+  WROTE bundle to ./demo/bundle-a (4 items).</code></pre>
+<pre><code>$ memport merge ./demo/bundle-a-v1 ./demo/bundle-a --out ./demo/merged --apply
+Merge plan: ./demo/bundle-a-v1 + ./demo/bundle-a → ./demo/merged
+  output items: 4, deduped: 3, conflicts: 1, possible duplicates: 0
+  conflict 01M5V9E686T5Y1ZXZCF3H8MBEN: winner "testing" over "testing" (newer updated wins; loser preserved in merge-report.md)
+  WROTE merged bundle to ./demo/merged (merge-report.md included).</code></pre>
+<p>The merge report (excerpt — the loser follows, in its original file text):</p>
+<pre><code># Memport merge report
+
+- First bundle: ./demo/bundle-a-v1 (4 items)
+- Second bundle: ./demo/bundle-a (4 items)
+- Output items: 4
+- Deduped: 3
+- Conflicts: 1
+- Possible duplicates: 0
+
+## Conflicts (winner kept; loser preserved below, nothing deleted)
+
+- id 01M5V9E686T5Y1ZXZCF3H8MBEN: winner "testing" over "testing" (newer updated wins)
+
+## Superseded versions (original file text, preserved for audit)
+
+---
+id: "01M5V9E686T5Y1ZXZCF3H8MBEN"
+kind: "rule"
+title: "testing"
+scope: "project"
+origin: "human"
+source_tool: "claude"
+source_path: "./demo/project-v1/.claude/rules/testing.md"
+source_kind: "claude:rules:paths:src/**/*.ts,test/**/*.ts"
+created: "2026-10-26T05:02:56.262Z"
+updated: "2026-10-26T05:02:56.262Z"
+status: "active"
+---
+
+# Testing rules
+
+Write a regression test for every bug fix.
+…</code></pre>
+<pre><code>$ memport validate ./demo/merged
+VALID ./demo/merged (4 items).</code></pre>
+</div>
+
+<h2>Run it yourself</h2>
+<pre><code>npm install &amp;&amp; npm run build
+node dist/cli.js scan --project &lt;dir&gt;
+node dist/cli.js bundle --from claude --scope project --project &lt;dir&gt; --out &lt;bundle&gt; --apply
+node dist/cli.js apply --bundle &lt;bundle&gt; --to codex --scope project --project &lt;dir&gt; --apply
+node dist/cli.js convert --from claude --to cursor --scope project --project &lt;dir&gt; --out &lt;bundle&gt; --apply
+node dist/cli.js merge &lt;bundleA&gt; &lt;bundleB&gt; --out &lt;merged&gt; --apply
+node dist/cli.js validate &lt;bundle&gt;</code></pre>
+<p class="small">Paths shortened for readability (<code>./demo/</code> for the demo work
+dir, <code>./fixtures/</code> for the fixture tree); outputs are otherwise
+verbatim from live runs. “…” marks lines omitted from an excerpt.</p>
+
+<p class="small">Source: <a href="https://github.com/TamTunnel/memport">github.com/TamTunnel/memport</a>
+· Apache-2.0 · Sample memory move generated with the Memport CLI, October 2026.</p>
+
+</body>
+</html>
