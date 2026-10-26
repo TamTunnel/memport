@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.memport-bak
+# The architect's assessment is working material, not part of the shipped repo.
+ASSESSMENT.md
+.DS_Store

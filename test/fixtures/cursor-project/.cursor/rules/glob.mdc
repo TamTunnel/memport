@@ -1,0 +1,7 @@
+---
+globs: ["*.ts"]
+---
+
+# TypeScript
+
+Prefer interfaces over type aliases for object shapes.

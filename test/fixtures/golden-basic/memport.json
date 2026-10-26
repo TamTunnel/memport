@@ -1,0 +1,20 @@
+{
+  "format": "memport/1",
+  "created": "2026-10-26T04:20:16.634Z",
+  "source_tool": null,
+  "source_path": null,
+  "project": "/fake/demo-shop",
+  "items": [
+    {
+      "id": "01M5V702KR9WDGGAZYK80PHPVF",
+      "file": "items/01M5V702KR9WDGGAZYK80PHPVF.md",
+      "sha256": "2c2c656ee43f122ea188f5fc0247c8dda9fd6ad502f55d17754e06349e13940c"
+    },
+    {
+      "id": "01M5V702KRZ7QF864QE5DKG79N",
+      "file": "items/01M5V702KRZ7QF864QE5DKG79N.md",
+      "sha256": "fccd1cfc791a1172dd9aad72d72976e1a87773445eeb3584728738efd9f77e3f"
+    }
+  ],
+  "notes": []
+}

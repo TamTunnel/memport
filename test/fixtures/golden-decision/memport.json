@@ -1,0 +1,25 @@
+{
+  "format": "memport/1",
+  "created": "2026-10-26T04:20:16.635Z",
+  "source_tool": null,
+  "source_path": null,
+  "project": "/fake/demo-shop",
+  "items": [
+    {
+      "id": "01M5V702KTKM3Y0KYWA5PP3QS4",
+      "file": "items/01M5V702KTKM3Y0KYWA5PP3QS4.md",
+      "sha256": "c44f527b8a4c363237d1512d068a3e833e51bc382ac1df70fa93dab8044e3508"
+    },
+    {
+      "id": "01M5V702KTQP5HTMFHJHBVT943",
+      "file": "items/01M5V702KTQP5HTMFHJHBVT943.md",
+      "sha256": "856982cf6bff6798c77aa8c7c60f35e52abe70a89533078964a59e8c0ba0ad08"
+    },
+    {
+      "id": "01M5V702KTYJNW5AQH3G1H3YH2",
+      "file": "items/01M5V702KTYJNW5AQH3G1H3YH2.md",
+      "sha256": "48b41efe778de3b6b3d2f060ff9bc19ec30a670d2a2e0331d295db5258337eb7"
+    }
+  ],
+  "notes": []
+}
