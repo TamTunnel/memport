@@ -219,6 +219,10 @@ memport validate <dir> [--json]
 memport list <dir> [--kind <kind>] [--scope <scope>] [--json]
 ```
 
+Note: `list --json` returns `{valid, validationErrors, items}` (not a bare
+array), and item entries include full bodies — treat its output as
+sensitive as the bundle itself.
+
 Global flags: `--json` (machine-readable output for every command),
 `--project <dir>` (project root; defaults to cwd for `scan` only).
 Mutating commands default to plan mode; `--apply` executes.
